@@ -21,5 +21,31 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+# -----------------------------------------------------------------------------
+# Rust, Python
+# -----------------------------------------------------------------------------
+
+# Environments
+.venv
+
+# Artifacts
+/target
+__pycache__
+*.dll
+*.so
+
+# Tracing
+trace.json
+
+# -----------------------------------------------------------------------------
+# General
+# -----------------------------------------------------------------------------
+
+# Never ignore .gitkeep files
+!**/.gitkeep
+
+# macOS internals
+.DS_Store
+
+# Temporary files
+tmp

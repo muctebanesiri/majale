@@ -21,5 +21,8 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+# Allow running as a script, with `python -m zensical`.
+from zensical.main import cli
+
+if __name__ == "__main__":  # pragma: no cover
+    cli()

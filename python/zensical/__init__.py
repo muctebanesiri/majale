@@ -21,5 +21,6 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+from zensical.zensical import build, serve, version
+
+__all__ = ["build", "serve", "version"]

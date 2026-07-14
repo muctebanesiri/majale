@@ -21,5 +21,19 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+# ----------------------------------------------------------------------------
+# Functions
+# ----------------------------------------------------------------------------
+
+def build(config_file: str, options: dict) -> None:
+    """Builds the project."""
+
+def serve(config_file: str, options: dict) -> None:
+    """Builds and serves the project."""
+
+def version() -> str:
+    """Returns the current version."""
+
+# ----------------------------------------------------------------------------
+
+__all__ = ["build", "serve", "version"]

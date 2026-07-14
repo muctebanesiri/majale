@@ -1,0 +1,305 @@
+// Copyright (c) 2025-2026 Zensical and contributors
+
+// SPDX-License-Identifier: MIT
+// All contributions are certified under the DCO
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to
+// deal in the Software without restriction, including without limitation the
+// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+// IN THE SOFTWARE.
+
+// ----------------------------------------------------------------------------
+
+//! File watcher.
+
+use crossbeam::channel::Sender;
+use mio::Waker;
+use std::collections::BTreeSet;
+use std::ffi::OsStr;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use zensical_watch::event::{Event, Kind};
+use zensical_watch::{Agent, Error, Result};
+use zrx::id::Id;
+use zrx::scheduler::Session;
+
+use super::config::Config;
+
+mod source;
+
+pub use source::Source;
+
+// ----------------------------------------------------------------------------
+// Structs
+// ----------------------------------------------------------------------------
+
+/// File watcher.
+///
+/// This is a thin wrapper around the file agent. We're going to refactor this
+/// logic into a provider architecture that will make things more flexible.
+pub struct Watcher {
+    /// File agent.
+    agent: Agent,
+}
+
+// ----------------------------------------------------------------------------
+// Implementations
+// ----------------------------------------------------------------------------
+
+impl Watcher {
+    /// Creates a file watcher.
+    #[allow(clippy::too_many_lines)]
+    pub fn new(
+        config: &Config, serve: bool, session: Session<Id, Source>,
+        reload: Sender<String>, waker: Option<Arc<Waker>>,
+    ) -> Result<Self> {
+        let mut sources = Vec::default();
+
+        // Add docs directory and theme directories
+        sources.push((config.get_docs_dir(), config.project.docs_dir.clone()));
+        for (i, theme_dir) in config.theme_dirs.iter().enumerate() {
+            sources.push((theme_dir.clone(), format!("templates/{i}")));
+        }
+
+        // Add configuration file last, or we might run into overlapping paths.
+        // Note that right now, we need to monitor the whole directory. We'll
+        // integrate identification generation deeper into the file agent,
+        // so we can make sure that there won't be any ambiguities.
+        let mut path = config.path.clone();
+        path.pop();
+        sources.push((config.get_site_dir(), config.project.site_dir.clone()));
+        sources.push((path, String::from(".")));
+
+        // Track seen files to restart on config or template change
+        let mut seen = BTreeSet::new();
+
+        // Normalize watched paths once, so path comparisons stay stable across
+        // platforms and watcher backends (notably on Windows).
+        let config_path = canonical_or_clone(&config.path);
+        let theme_dirs = config
+            .theme_dirs
+            .iter()
+            .map(|path| canonical_or_clone(path))
+            .collect::<Vec<_>>();
+        let watched_files = config
+            .project
+            .watched_files
+            .iter()
+            .map(|(path, _)| canonical_or_clone(path))
+            .collect::<BTreeSet<_>>();
+
+        // Initialize file agent - we use a debounce interval of 20ms, which
+        // should be sufficient to correctly determine rename events
+        let agent = Agent::new(Duration::from_millis(20), serve, {
+            let config = config.clone();
+            move |res| {
+                // For now, we just swallow the event, as the file agent should
+                // Skip anything other than files and symbolic links.
+                // Link events allow assets provided via editable installs
+                // (e.g. symlinked theme directories) to enter the build.
+                if let Ok(event) = res {
+                    if !matches!(event.kind(), Kind::File | Kind::Link) {
+                        return Ok(());
+                    }
+
+                    // Ignore symbolic links that don't resolve to files.
+                    // Directory links are expanded by the watcher backend,
+                    // but forwarding the link itself would later be treated as
+                    // a file in the workflow and can fail with IsADirectory.
+                    if event.kind() == Kind::Link
+                        && !fs::metadata(event.path().as_path())
+                            .is_ok_and(|meta| meta.is_file())
+                    {
+                        return Ok(());
+                    }
+
+                    // Canonicalize once to compare against configured paths,
+                    // which avoids mismatches between equivalent path forms.
+                    let event_path = canonical_or_clone(&event.path());
+
+                    // Check if the config file reloaded, and terminate agent,
+                    // as we need to kick off the entire pipeline again
+                    if event_path == config_path
+                        && !seen.insert(config_path.clone())
+                    {
+                        return Err(Error::Disconnected);
+                    }
+
+                    // Check if the event is in any of the theme directories
+                    // and restart the build if we've already seen the file
+                    for dir in &theme_dirs {
+                        if event_path.starts_with(dir)
+                            && !seen.insert(event_path.clone())
+                        {
+                            return Err(Error::Disconnected);
+                        }
+                    }
+
+                    // Check if one of the source files managed by mkdocstrings
+                    // changed, and restart the build
+                    if watched_files.contains(&event_path)
+                        && !seen.insert(event_path.clone())
+                    {
+                        return Err(Error::Disconnected);
+                    }
+
+                    // Ignore events in the site directory, since they are files
+                    // that were generated and should not trigger a rebuild. We
+                    // forward them to the reload channel in the server instead,
+                    // so the browser can refresh the site.
+                    let site_dir = config.get_site_dir();
+                    let site_dir = canonical_or_clone(&site_dir);
+                    if event_path.starts_with(&site_dir) {
+                        // Compute identifier, since we need the relative URL
+                        // so we only reload the page the client is on.
+                        let id = to_id(event.path().clone(), &sources);
+
+                        // Compute path, and if directory URLs are enabled,
+                        // strip the `index.html` suffix, if present.
+                        let path = id.as_uri().to_string();
+                        let path = if config.project.use_directory_urls {
+                            path.trim_end_matches("index.html")
+                        } else {
+                            path.as_str()
+                        };
+
+                        // Prepend base path
+                        let base = config.get_base_path();
+                        let path = if base == "/" {
+                            format!("{base}{path}")
+                        } else {
+                            format!("{base}/{path}")
+                        };
+
+                        // Send path to reload channel and wake server polling
+                        // loop, if available (i.e., serve mode is enabled)
+                        let _ = reload.send(path);
+                        if let Some(waker) = &waker {
+                            waker.wake()?;
+                        }
+
+                        // We don't trigger rebuilds for the site directory
+                        return Ok(());
+                    }
+
+                    // Compute an identifier from the path and known contexts -
+                    // in case the session is disconnected, the agent terminates
+                    match event {
+                        // File was created or modified
+                        Event::Create { path, .. }
+                        | Event::Modify { path, .. } => {
+                            let data = path.to_string_lossy().into_owned();
+                            session
+                                .insert(to_id(path, &sources), data.into())?;
+                        }
+
+                        // File was renamed
+                        Event::Rename { from, to, .. } => {
+                            let data = to.to_string_lossy().into_owned();
+                            session.remove(to_id(from, &sources))?;
+                            session.insert(to_id(to, &sources), data.into())?;
+                        }
+
+                        // File was removed
+                        Event::Remove { path, .. } => {
+                            session.remove(to_id(path, &sources))?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+        });
+
+        // Watch docs and template directories
+        agent.watch(&config.path)?;
+        for theme_dir in &config.theme_dirs {
+            // Skip `.icons` directory. On NetBSD, kqueue opens one file
+            // descriptor per file/directory, quickly reaching limits set by
+            // the system on the number of open file descriptors.
+            match fs::read_dir(theme_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.file_name() != Some(OsStr::new(".icons")) {
+                            agent.watch(&path)?;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Fall back to watching the whole theme directory if we
+                    // cannot enumerate its contents for any reason.
+                    agent.watch(theme_dir)?;
+                }
+            }
+        }
+
+        // Watch files used by extensions
+        for (path, _) in &config.project.watched_files {
+            agent.watch(path)?;
+        }
+
+        // Watch site directory, ensuring it exists
+        let site_dir = config.get_site_dir();
+        fs::create_dir_all(&site_dir).unwrap();
+        agent.watch(&site_dir)?;
+
+        // Return file watcher
+        agent.watch(config.get_docs_dir())?;
+        Ok(Self { agent })
+    }
+
+    /// Returns whether the watcher is terminated.
+    pub fn is_terminated(&self) -> bool {
+        self.agent.is_terminated()
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Functions
+// ----------------------------------------------------------------------------
+
+/// Create identifier for the given path and sources.
+///
+/// This will also be hoisted into the file provider, which will make sure that
+/// identifiers are platform independent by always ensuring forward slashes.
+fn to_id(path: Arc<PathBuf>, sources: &[(PathBuf, String)]) -> Id {
+    let option = sources.iter().find_map(|(prefix, context)| {
+        if let Ok(suffix) = path.strip_prefix(prefix) {
+            let location = suffix.to_str().unwrap_or("");
+            Some(
+                Id::builder()
+                    .provider("file")
+                    .context(context.replace('\\', "/"))
+                    .location(location.replace('\\', "/"))
+                    .build()
+                    .expect("invariant"),
+            )
+        } else {
+            None
+        }
+    });
+
+    // Note that this cannot fail, since there must be a path in the source
+    // mapping that matches the given path, at least the project root
+    option.expect("invariant")
+}
+
+#[inline]
+fn canonical_or_clone(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}

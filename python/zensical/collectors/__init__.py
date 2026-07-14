@@ -21,5 +21,14 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+from zensical.collectors.anchors import anchors
+from zensical.collectors.references import Reference, references
+from zensical.collectors.snippets import Snippet, snippets
+
+__all__ = [
+    "Reference",
+    "Snippet",
+    "anchors",
+    "references",
+    "snippets",
+]

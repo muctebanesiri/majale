@@ -21,5 +21,12 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+fn_params_layout = "compressed"
+max_width = 80
+struct_lit_width = 30
+
+# -----------------------------------------------------------------------------
+
+# Set the 2021 edition for consistency, which is necessary, since `rustfmt`
+# and `rust-analyzer` currently behave differently causing jumpy formatting
+style_edition = "2021"

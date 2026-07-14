@@ -21,5 +21,31 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# ----------------------------------------------------------------------------
+# Classes
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class Span:
+    """A contiguous span of bytes.
+
+    Instances of this class are used as the positional primitive throughout
+    reference extraction. Offsets are byte-based (not code-point or line/column
+    based), which makes spans stable when slicing from the original input buffer
+    and when interoperating with Markdown internals that operate on strings.
+    """
+
+    start: int
+    """Start offset of the span."""
+
+    end: int
+    """End offset of the span."""
+
+    def contains(self, index: int) -> bool:
+        """Return whether this span fully covers the start of another."""
+        return self.start <= index < self.end

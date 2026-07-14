@@ -21,5 +21,50 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+# ----------------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------------
+
+_RE = re.compile(
+    r"""
+    # Any element with an `id` attribute:
+    #
+    #   <h2 id="section-1">
+    #
+    (?P<id>
+        <[a-zA-Z][^>]*\sid=["'](?P<id_value>[^"']+)["'][^>]*>
+    )
+    |
+    # Anchor elements with `name` attribute:
+    #
+    #   <a name="top">
+    #
+    (?P<name>
+        <a\s[^>]*name=["'](?P<name_value>[^"']+)["'][^>]*>
+    )
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+"""
+Match anchor declarations in rendered HTML.
+"""
+
+# ----------------------------------------------------------------------------
+# Functions
+# ----------------------------------------------------------------------------
+
+
+def anchors(html: str) -> Iterator[str]:
+    """Scan HTML and yield anchor declarations."""
+    for match in _RE.finditer(html):
+        value = match.group("id_value") or match.group("name_value")
+        if value:
+            yield value

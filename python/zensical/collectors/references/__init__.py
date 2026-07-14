@@ -21,5 +21,39 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from zensical.collectors.references.cursor import Cursor, _scan
+from zensical.collectors.references.types import (
+    FootnoteDefinition,
+    FootnoteReference,
+    Link,
+    LinkDefinition,
+    LinkReference,
+    Reference,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+__all__ = [
+    "FootnoteDefinition",
+    "FootnoteReference",
+    "Link",
+    "LinkDefinition",
+    "LinkReference",
+    "Reference",
+    "references",
+]
+
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+
+
+def references(markdown: bytes, shift: int = 0) -> Iterator[Reference]:
+    """Scan Markdown and yield references."""
+    cursor = Cursor(markdown, shift)
+    yield from _scan(cursor)

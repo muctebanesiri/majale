@@ -21,5 +21,38 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-python/tests/** linguist-vendored
-scripts/* linguist-vendored
+name: Commit
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up mono
+        uses: zensical/mono@v0
+
+      - name: Get commit messages
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          git log "$BASE..$HEAD" --format=%h > commits.txt
+
+      - name: Validate commit messages
+        run: |
+          while IFS= read -r id; do
+            [ -z "$id" ] && continue
+            mono validate commit --id $id
+          done < commits.txt
